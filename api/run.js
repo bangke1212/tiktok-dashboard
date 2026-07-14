@@ -1,4 +1,6 @@
-// Vercel serverless — TikTok view sender (stable)
+// Vercel serverless — TikTok view sender (ESM)
+import { createHash } from 'crypto'
+
 const ENDPOINTS = [
   'https://api16-core-c-alisg.tiktokv.com/aweme/v1/aweme/stats/',
   'https://api16-core-c-useast1a.tiktokv.com/aweme/v1/aweme/stats/',
@@ -8,11 +10,10 @@ const ENDPOINTS = [
 const BRANDS = ['Google','Samsung','Xiaomi','Oppo','OnePlus','Realme','Vivo','Huawei','Honor','Motorola','Nokia','Sony','Asus','Tecno','Infinix','Redmi','Poco','Lenovo']
 const REGIONS = ['ID','VN','US','SG','MY','TH','PH','TW','JP','KR']
 const LANGS = ['id','en','zh','th','vi','ms','ja','ko']
-const crypto = require('crypto')
 
-function r(n) { return Math.floor(Math.random() * n) }
-function pick(a) { return a[r(a.length)] }
-function md5(s) { return crypto.createHash('md5').update(s).digest('hex') }
+const r = (n) => Math.floor(Math.random() * n)
+const pick = (a) => a[r(a.length)]
+const md5 = (s) => createHash('md5').update(s).digest('hex')
 
 function genDevice() {
   const b = pick(BRANDS)
@@ -55,7 +56,7 @@ async function sendOne(videoId) {
     const res = await fetch(ep + '?' + ps, {
       method: 'POST',
       headers: { ...sig, 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'com.ss.android.ugc.trill/400304' },
-      body: body
+      body
     })
     return res.status === 200
   } catch { return false }
@@ -66,18 +67,16 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   if (req.method === 'OPTIONS') return res.status(200).end()
-  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
 
   try {
     const { videoId, url } = req.body || {}
     let vid = videoId
     if (!vid && url) { vid = extractId(url); if (!vid) vid = await resolveShort(url) }
-    if (!vid) return res.status(400).json({ error: 'Could not extract video ID. Use full TikTok URL.' })
+    if (!vid) return res.status(400).json({ error: 'Could not extract video ID' })
 
     const budget = 7000, start = Date.now()
     let success = 0, failed = 0
 
-    // 20 concurrent workers
     const workers = []
     for (let i = 0; i < 20; i++) {
       workers.push((async () => {
@@ -91,6 +90,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ success, failed, total: success + failed, elapsed: Date.now() - start, videoId: vid })
   } catch (e) {
-    return res.status(500).json({ error: 'Internal error: ' + e.message })
+    return res.status(500).json({ error: e.message })
   }
 }
