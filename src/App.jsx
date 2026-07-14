@@ -64,25 +64,36 @@ export default function App() {
 
   // Start the bot from browser
   const startBot = useCallback(async () => {
-    const vid = extractVideoId(cfgUrl)
-    if (!vid) { alert("Invalid TikTok URL!"); return }
+    if (!cfgUrl.trim()) { alert("Please enter a TikTok URL!"); return }
     
     setLocalRunning(true)
     setSendCount(0)
     
-    // Tell API we're starting
-    await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ action:"start", url:cfgUrl, videoId:vid, viewsPerRun:cfgThreads }) })
+    // Try local extraction, but server will resolve if needed
+    const vid = extractVideoId(cfgUrl)
+    
+    // Tell API we're starting (server resolves short links)
+    await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ action:"start", url:cfgUrl, videoId:vid||"", viewsPerRun:cfgThreads }) })
     
     // Add start log
     const t = new Date().toLocaleTimeString("en-US",{hour12:false})
-    setLogs(l=>[{time:t,msg:"Bot started — "+cfgUrl.slice(0,40)+"...",tp:"s"},...l].slice(0,100))
+    setLogs(l=>[{time:t,msg:"Bot started — "+cfgUrl.slice(0,50)+"...",tp:"s"},...l].slice(0,100))
     
-    // Loop: call /api/run every 3s
+    // Loop: call /api/run every 3s (server handles URL resolution)
     let count = 0
     const runLoop = async () => {
       try {
-        const r = await fetch(RUN, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ videoId:vid, url:cfgUrl }) })
+        const payload = vid ? { videoId:vid } : { url:cfgUrl }
+        const r = await fetch(RUN, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) })
         const d = await r.json()
+        
+        if (d.error) { 
+          const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
+          setLogs(l=>[{time:t2,msg:"Error: "+d.error, tp:"e"},...l].slice(0,100))
+          if (d.error.includes("video ID")) { stopBot(); return }
+          return 
+        }
+        
         count++
         setSendCount(count)
         
@@ -90,20 +101,20 @@ export default function App() {
         const cur = statsRef.current
         await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ success:cur.success+d.success, failed:cur.failed+d.failed, speed:d.total/(d.elapsed/1000)*60, running:true }) })
         
-        // Success log every 5 runs
+        // Log every 5 runs
         if (count % 5 === 0) {
           const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
           setLogs(l=>[{time:t2,msg:"+"+(cur.success+d.success).toLocaleString()+" total views",tp:"s"},...l].slice(0,100))
         }
       } catch (e) {
         const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
-        setLogs(l=>[{time:t2,msg:"Run error: "+e.message, tp:"e"},...l].slice(0,100))
+        setLogs(l=>[{time:t2,msg:"Network error: "+e.message, tp:"e"},...l].slice(0,100))
       }
     }
     
     runLoop()
     timerRef.current = setInterval(runLoop, 3000)
-  }, [cfgUrl, cfgThreads])
+  }, [cfgUrl, cfgThreads, stopBot])
   
   // Stop the bot
   const stopBot = useCallback(async () => {
