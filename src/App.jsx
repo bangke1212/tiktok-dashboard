@@ -90,7 +90,7 @@ export default function App() {
         if (d.error) { 
           const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
           setLogs(l=>[{time:t2,msg:"Error: "+d.error, tp:"e"},...l].slice(0,100))
-          if (d.error.includes("video ID")) { stopBot(); return }
+          if (d.error.includes("video ID")) { setLocalRunning(false); clearInterval(timerRef.current); timerRef.current = null; fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ action:"stop" }) }); return }
           return 
         }
         
@@ -114,7 +114,7 @@ export default function App() {
     
     runLoop()
     timerRef.current = setInterval(runLoop, 3000)
-  }, [cfgUrl, cfgThreads, stopBot])
+  }, [cfgUrl, cfgThreads])
   
   // Stop the bot
   const stopBot = useCallback(async () => {
