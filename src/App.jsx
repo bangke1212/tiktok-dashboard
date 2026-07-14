@@ -1,13 +1,14 @@
-import { useState, useEffect } from "react"
-import { Zap, TrendingUp, Eye, CheckCircle, XCircle, Activity, Clock, Target, BarChart3, Gauge, Settings, Wifi, WifiOff } from "lucide-react"
+import { useState, useEffect, useRef, useCallback } from "react"
+import { Zap, TrendingUp, Eye, CheckCircle, XCircle, Activity, Clock, Target, BarChart3, Gauge, Settings, Wifi, WifiOff, Play, Square, RefreshCw, Trash2, Send } from "lucide-react"
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts"
 
 const API = "/api/stats"
+const RUN = "/api/run"
 
 function useStats() {
-  const [s, setS] = useState({ success: 0, failed: 0, total: 0, speed: 0, running: false, history: [], url: "", startTime: null })
+  const [s, setS] = useState({ success: 0, failed: 0, total: 0, speed: 0, running: false, history: [], url: "", videoId: "", startTime: null, viewsPerRun: 100 })
   useEffect(() => { const p = async () => { try { const r = await fetch(API); if (r.ok) setS(await r.json()) } catch {} }; p(); const t = setInterval(p, 1500); return () => clearInterval(t) }, [])
-  return s
+  return [s, setS]
 }
 
 function Card({ icon: I, label, val, suf, color, bg, lg }) {
@@ -36,20 +37,95 @@ function Chart({ history }) {
   </div>
 }
 
+function extractVideoId(url) {
+  let m = url.match(/\/video\/(\d+)/); if (m) return m[1]
+  m = url.match(/(\d{19})/); return m ? m[1] : null
+}
+
 export default function App() {
-  const s = useStats()
+  const [s] = useStats()
   const [logs, setLogs] = useState([])
-  const [cfg, setCfg] = useState({ url: "", speed: 200, threads: 100 })
-  const [showCfg, setShowCfg] = useState(false)
-  
-  useEffect(() => {
-    const prev = parseInt(localStorage.getItem("tkp")||"0")
-    if (s.total > prev) {
-      const t = new Date().toLocaleTimeString("en-US",{hour12:false})
-      setLogs(l=>[{time:t,msg:"+ "+(s.total-prev).toLocaleString()+" views ("+(s.speed?.toFixed(0)||0)+"/min)",tp:"s"},...l].slice(0,100))
+  const [cfgUrl, setCfgUrl] = useState("")
+  const [cfgSpeed, setCfgSpeed] = useState(100)
+  const [cfgThreads, setCfgThreads] = useState(50)
+  const [localRunning, setLocalRunning] = useState(false)
+  const [sendCount, setSendCount] = useState(0)
+  const timerRef = useRef(null)
+  const statsRef = useRef(s)
+  statsRef.current = s
+
+  // Start the bot from browser
+  const startBot = useCallback(async () => {
+    const vid = extractVideoId(cfgUrl)
+    if (!vid) { alert("Invalid TikTok URL!"); return }
+    
+    setLocalRunning(true)
+    setSendCount(0)
+    
+    // Tell API we're starting
+    await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ action:"start", url:cfgUrl, videoId:vid, viewsPerRun:cfgThreads }) })
+    
+    // Add start log
+    const t = new Date().toLocaleTimeString("en-US",{hour12:false})
+    setLogs(l=>[{time:t,msg:"Bot started — "+cfgUrl.slice(0,40)+"...",tp:"s"},...l].slice(0,100))
+    
+    // Loop: call /api/run every 3s
+    let count = 0
+    const runLoop = async () => {
+      try {
+        const r = await fetch(RUN, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ videoId:vid }) })
+        const d = await r.json()
+        count++
+        setSendCount(count)
+        
+        // Update stats in API
+        const cur = statsRef.current
+        await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ success:cur.success+d.success, failed:cur.failed+d.failed, speed:d.total/(d.elapsed/1000)*60, running:true }) })
+        
+        // Success log every 5 runs
+        if (count % 5 === 0) {
+          const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
+          setLogs(l=>[{time:t2,msg:"+"+(cur.success+d.success).toLocaleString()+" total views",tp:"s"},...l].slice(0,100))
+        }
+      } catch (e) {
+        const t2 = new Date().toLocaleTimeString("en-US",{hour12:false})
+        setLogs(l=>[{time:t2,msg:"Run error: "+e.message, tp:"e"},...l].slice(0,100))
+      }
     }
-    localStorage.setItem("tkp",s.total)
-  },[s.total])
+    
+    runLoop()
+    timerRef.current = setInterval(runLoop, 3000)
+  }, [cfgUrl, cfgThreads])
+  
+  // Stop the bot
+  const stopBot = useCallback(async () => {
+    setLocalRunning(false)
+    clearInterval(timerRef.current)
+    timerRef.current = null
+    
+    await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ action:"stop" }) })
+    const t = new Date().toLocaleTimeString("en-US",{hour12:false})
+    setLogs(l=>[{time:t,msg:"Bot stopped — "+s.total.toLocaleString()+" total views",tp:"s"},...l].slice(0,100))
+  }, [s.total])
+  
+  // Reset stats
+  const resetStats = async () => {
+    await fetch(API, { method:"DELETE" })
+    setLogs([])
+    setSendCount(0)
+  }
+  
+  // Cleanup on unmount
+  useEffect(() => () => { clearInterval(timerRef.current) }, [])
+  
+  // Auto-stop when API says running=false (in case bot is stopped externally)
+  useEffect(() => {
+    if (localRunning && !s.running) {
+      setLocalRunning(false)
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }, [s.running, localRunning])
   
   const tot = s.success + s.failed
   const el = s.startTime ? Math.floor((Date.now()-s.startTime)/1000) : 0
@@ -65,36 +141,67 @@ export default function App() {
           <div><h1 className="text-lg font-bold tracking-tight">TikTok View Bot</h1><p className="text-[10px] text-slate-500 uppercase tracking-widest">Real-time Dashboard</p></div>
         </div>
         <div className="flex items-center gap-3">
-          {s.running?<span className="flex items-center gap-2 text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1.5 rounded-full border border-emerald-500/20"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/>Running</span>:<span className="flex items-center gap-2 text-xs bg-slate-800 text-slate-400 px-3 py-1.5 rounded-full border border-slate-700"><span className="w-2 h-2 rounded-full bg-slate-600"/>Idle</span>}
+          {localRunning
+            ? <span className="flex items-center gap-2 text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1.5 rounded-full border border-emerald-500/20 animate-pulse"><span className="w-2 h-2 rounded-full bg-emerald-400"/>Running</span>
+            : <span className="flex items-center gap-2 text-xs bg-slate-800 text-slate-400 px-3 py-1.5 rounded-full border border-slate-700"><span className="w-2 h-2 rounded-full bg-slate-600"/>Idle</span>}
           {s.url&&<span className="hidden sm:block text-xs text-slate-500 truncate max-w-[200px]">{s.url}</span>}
-          <button onClick={()=>setShowCfg(!showCfg)} className="p-2 rounded-lg hover:bg-slate-800 transition-colors"><Settings size={18} className="text-slate-400"/></button>
+          <button onClick={resetStats} className="p-2 rounded-lg hover:bg-slate-800 transition-colors" title="Reset"><Trash2 size={16} className="text-slate-500"/></button>
         </div>
       </div>
     </header>
     
     <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 py-6">
-      {showCfg&&<div className="glass rounded-2xl p-5 mb-6 animate-slide-in space-y-4">
-        <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2"><Settings size={16}/>Bot Config</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div><label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Target URL</label><input value={cfg.url} onChange={e=>setCfg({...cfg,url:e.target.value})} placeholder="https://www.tiktok.com/@user/video/..." className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500"/></div>
-          <div><label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Speed (views/min)</label><input type="number" value={cfg.speed} onChange={e=>setCfg({...cfg,speed:+e.target.value})} min={10} max={2000} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"/></div>
-          <div><label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Threads</label><input type="number" value={cfg.threads} onChange={e=>setCfg({...cfg,threads:+e.target.value})} min={10} max={500} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"/></div>
+      {/* Control Panel */}
+      <div className="glass rounded-2xl p-5 mb-6 animate-slide-in space-y-4">
+        <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2"><Settings size={16}/>Bot Control Panel</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
+          <div className="sm:col-span-2">
+            <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">TikTok Video URL</label>
+            <input value={cfgUrl} onChange={e=>setCfgUrl(e.target.value)} disabled={localRunning}
+              placeholder="https://www.tiktok.com/@user/video/1234567890123456789"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"/>
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Workers</label>
+            <select value={cfgThreads} onChange={e=>setCfgThreads(+e.target.value)} disabled={localRunning}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50">
+              <option value={25}>25 - Slow</option><option value={50}>50 - Medium</option><option value={75}>75 - Fast</option><option value={100}>100 - Turbo</option>
+            </select>
+          </div>
+          <div className="flex gap-2">
+            {!localRunning ? (
+              <button onClick={startBot} disabled={!cfgUrl}
+                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-semibold px-5 py-2.5 rounded-lg transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-30 disabled:cursor-not-allowed text-sm">
+                <Play size={16}/>Start Bot
+              </button>
+            ) : (
+              <button onClick={stopBot}
+                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-400 text-white font-semibold px-5 py-2.5 rounded-lg transition-all shadow-lg shadow-red-500/20 text-sm animate-pulse">
+                <Square size={16}/>Stop Bot
+              </button>
+            )}
+          </div>
         </div>
-        <p className="text-[10px] text-slate-600">Run: <code className="text-cyan-400 bg-slate-800 px-1.5 py-0.5 rounded">python bot.py</code> — auto-posts to dashboard</p>
-      </div>}
+        {localRunning && <div className="flex items-center gap-3 text-xs text-slate-400 pt-1">
+          <span className="flex items-center gap-1.5"><Send size={12} className="text-cyan-400"/>{sendCount} batches sent</span>
+          <span className="flex items-center gap-1.5"><RefreshCw size={12} className="text-cyan-400 animate-spin"/>Looping every 3s</span>
+          <span className="text-slate-600">| Keep this tab open</span>
+        </div>}
+      </div>
       
+      {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 mb-6">
         <Card icon={Eye} label="Total Views" val={s.total} color="text-cyan-400" bg="bg-cyan-500/10" lg/>
         <Card icon={CheckCircle} label="Success" val={s.success} color="text-emerald-400" bg="bg-emerald-500/10"/>
         <Card icon={XCircle} label="Failed" val={s.failed} color="text-red-400" bg="bg-red-500/10"/>
         <Card icon={TrendingUp} label="Rate" val={tot>0?(s.success/tot*100).toFixed(1):0} suf="%" color="text-violet-400" bg="bg-violet-500/10"/>
-        <SpeedGauge speed={s.speed||0} running={s.running}/>
+        <SpeedGauge speed={s.speed||0} running={localRunning}/>
       </div>
       
       <div className="flex flex-wrap items-center gap-3 mb-6 text-xs text-slate-500">
         {el>0&&<span className="glass px-3 py-1.5 rounded-full flex items-center gap-1.5"><Clock size={12} className="text-slate-400"/>{es}</span>}
         {s.startTime&&<span className="glass px-3 py-1.5 rounded-full flex items-center gap-1.5"><Target size={12} className="text-slate-400"/>Started {new Date(s.startTime).toLocaleTimeString()}</span>}
-        <span className="glass px-3 py-1.5 rounded-full flex items-center gap-1.5">{s.running?<Wifi size={12} className="text-emerald-400"/>:<WifiOff size={12} className="text-slate-600"/>}{s.running?"Connected":"Disconnected"}</span>
+        <span className="glass px-3 py-1.5 rounded-full flex items-center gap-1.5">{localRunning?<Wifi size={12} className="text-emerald-400"/>:<WifiOff size={12} className="text-slate-600"/>}{localRunning?"Connected":"Disconnected"}</span>
       </div>
       
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -109,7 +216,7 @@ export default function App() {
       
       <div className="glass rounded-2xl p-4 sm:p-5 animate-slide-in">
         <div className="flex items-center gap-2 mb-3"><div className="w-8 h-8 rounded-lg bg-slate-500/10 flex items-center justify-center"><Activity size={16} className="text-slate-400"/></div><span className="text-xs text-slate-400 font-medium uppercase tracking-wider">Activity Log</span><span className="ml-auto text-[10px] text-slate-600">{logs.length} entries</span></div>
-        <div className="max-h-64 overflow-y-auto space-y-0">{logs.length===0?<p className="text-center text-slate-600 py-8 text-sm">No activity. Start bot to see logs.</p>:logs.map((l,i)=><div key={i} className="flex items-center gap-2 py-1.5 text-xs border-b border-slate-800/50 last:border-0 animate-slide-in"><span className="text-slate-600 font-mono shrink-0">{l.time}</span><span className={l.tp==="s"?"text-emerald-400":"text-slate-400"}>{l.tp==="s"?<CheckCircle size={12}/>:<Activity size={12}/>}</span><span className="text-slate-300 truncate">{l.msg}</span></div>)}</div>
+        <div className="max-h-64 overflow-y-auto space-y-0">{logs.length===0?<p className="text-center text-slate-600 py-8 text-sm">Enter URL and click Start Bot</p>:logs.map((l,i)=><div key={i} className="flex items-center gap-2 py-1.5 text-xs border-b border-slate-800/50 last:border-0 animate-slide-in"><span className="text-slate-600 font-mono shrink-0">{l.time}</span><span className={l.tp==="s"?"text-emerald-400":l.tp==="e"?"text-red-400":"text-slate-400"}>{l.tp==="s"?<CheckCircle size={12}/>:l.tp==="e"?<XCircle size={12}/>:<Activity size={12}/>}</span><span className="text-slate-300 truncate">{l.msg}</span></div>)}</div>
       </div>
     </main>
   </div>
