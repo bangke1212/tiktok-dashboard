@@ -38,8 +38,16 @@ function Chart({ history }) {
 }
 
 function extractVideoId(url) {
-  let m = url.match(/\/video\/(\d+)/); if (m) return m[1]
-  m = url.match(/(\d{19})/); return m ? m[1] : null
+  // Pure numeric ID
+  let m = url.match(/^\s*(\d{15,20})\s*$/); if (m) return m[1]
+  // /video/ID
+  m = url.match(/\/video[\/]?(\d{15,20})/); if (m) return m[1]
+  // /v/ID (short)
+  m = url.match(/\/v[\/]?(\d{15,20})/); if (m) return m[1]
+  // /photo/ID
+  m = url.match(/\/photo[\/]?(\d{15,20})/); if (m) return m[1]
+  // Any 15-20 digit number
+  m = url.match(/(\d{15,20})/); return m ? m[1] : null
 }
 
 export default function App() {
@@ -73,7 +81,7 @@ export default function App() {
     let count = 0
     const runLoop = async () => {
       try {
-        const r = await fetch(RUN, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ videoId:vid }) })
+        const r = await fetch(RUN, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ videoId:vid, url:cfgUrl }) })
         const d = await r.json()
         count++
         setSendCount(count)
